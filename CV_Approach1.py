@@ -9,7 +9,7 @@ DENSITY_THRESHOLDS = {         # Traffic density thresholds
     "LOW": 5,                
     "MEDIUM": 10             
 }
-VIDEO_SOURCE = "video.mp4"  
+VIDEO_SOURCE = "video1.mp4"  
 
 # Non-Maximum Suppression (NMS) parameter
 IOU_THRESHOLD_NMS = 0.3
