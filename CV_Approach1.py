@@ -1,19 +1,13 @@
 import cv2
 import numpy as np
 
-
-
 MIN_CONTOUR_AREA = 800         # Minimum contour area to be considered a vehicle
-DENSITY_THRESHOLDS = {         # Traffic density thresholds
-    "LOW": 5,                
-    "MEDIUM": 10             
-}
-VIDEO_SOURCE = "video.mp4"  
+VIDEO_SOURCE = "video.mp4"  # Replace with your video file path or camera index
 
-# Non-Maximum Suppression parameter
+# Non-Maximum Suppression (NMS) parameter
 IOU_THRESHOLD_NMS = 0.3
 
-# Persistent detections parameters
+
 MAX_MISSED_FRAMES = 10         # How many frames to keep a detection when not updated
 
 
@@ -22,7 +16,7 @@ if not cap.isOpened():
     print("Error: Could not open video.")
     exit()
 
-
+# --- Initialize Background Subtractor ---
 bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
 
 # List to hold persistent detections:
@@ -30,9 +24,9 @@ persistent_detections = []
 
 prev_frame = None    # Used for frame differencing
 
-
-
+# --- Helper Functions ---
 def compute_iou(boxA, boxB):
+
     xA = max(boxA[0], boxB[0])
     yA = max(boxA[1], boxB[1])
     xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
@@ -48,9 +42,11 @@ def compute_iou(boxA, boxB):
     return iou
 
 def non_max_suppression_fast(boxes, overlap_thresh):
+    """ Applies non-maximum suppression (NMS) to overlapping boxes. """
     if len(boxes) == 0:
         return []
 
+    # Convert to array format: [x, y, x+w, y+h]
     boxes_arr = np.array([[x, y, x + w, y + h] for (x, y, w, h) in boxes], dtype=float)
     pick = []
 
@@ -71,9 +67,9 @@ def non_max_suppression_fast(boxes, overlap_thresh):
             yy1 = max(y1[last], y1[i])
             xx2 = min(x2[last], x2[i])
             yy2 = min(y2[last], y2[i])
-            w = max(0, xx2 - xx1 + 1)
-            h = max(0, yy2 - yy1 + 1)
-            overlap = float(w * h) / area[i]
+            w_ = max(0, xx2 - xx1 + 1)
+            h_ = max(0, yy2 - yy1 + 1)
+            overlap = float(w_ * h_) / area[i]
             if overlap > overlap_thresh:
                 suppress.append(pos)
         idxs = np.delete(idxs, suppress)
@@ -81,10 +77,11 @@ def non_max_suppression_fast(boxes, overlap_thresh):
     return [boxes[i] for i in pick]
 
 def update_persistent_detections(current_boxes):
+
     global persistent_detections
     updated = []
-
     matched_current = [False] * len(current_boxes)
+    
     for detection in persistent_detections:
         best_iou = 0
         best_idx = -1
@@ -93,7 +90,7 @@ def update_persistent_detections(current_boxes):
             if iou > best_iou:
                 best_iou = iou
                 best_idx = idx
-        if best_iou > 0.3:
+        if best_iou > 0.3:  # IoU threshold for matching
             detection['box'] = current_boxes[best_idx]
             detection['age'] = 0
             matched_current[best_idx] = True
@@ -102,22 +99,26 @@ def update_persistent_detections(current_boxes):
             detection['age'] += 1
             if detection['age'] <= MAX_MISSED_FRAMES:
                 updated.append(detection)
-
+    
+    # Add new detections that did not match any persistent detection
     for idx, flag in enumerate(matched_current):
         if not flag:
             updated.append({'box': current_boxes[idx], 'age': 0})
             
     persistent_detections = updated
 
-# --- Main processing loop ---
+# --- Main Processing Loop ---
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
+    
     frame = cv2.resize(frame, (800, 600))
     
+    
     fg_mask = bg_subtractor.apply(frame, learningRate=0.005)
+    
     
     if prev_frame is not None:
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -127,9 +128,11 @@ while True:
         fg_mask = cv2.bitwise_or(fg_mask, diff_mask)
     prev_frame = frame.copy()
     
+    
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
     fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel, iterations=2)
     fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_DILATE, kernel, iterations=2)
+    
     
     contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     current_boxes = []
@@ -140,33 +143,47 @@ while True:
         x, y, w, h = cv2.boundingRect(cnt)
         current_boxes.append((x, y, w, h))
     
+    
     current_boxes = non_max_suppression_fast(current_boxes, IOU_THRESHOLD_NMS)
+    
     
     update_persistent_detections(current_boxes)
     
+    
     final_boxes = [d['box'] for d in persistent_detections]
+    
     
     for (x, y, w, h) in final_boxes:
         cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        cx, cy = x + w/2, y + h/2
-        cv2.circle(frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
     
-    vehicle_count = len(final_boxes)
-    if vehicle_count < DENSITY_THRESHOLDS["LOW"]:
+
+    vehicle_area = sum([w * h for (x, y, w, h) in final_boxes])
+    
+    
+    road_area = frame.shape[0] * frame.shape[1]
+    
+    # Compute density ratio
+    density_ratio = vehicle_area / road_area
+    
+
+    if density_ratio < 0.2:
         density = "LOW"
-    elif vehicle_count < DENSITY_THRESHOLDS["MEDIUM"]:
+        density_color = (0, 255, 0)       # Green
+    elif density_ratio < 0.5:
         density = "MEDIUM"
+        density_color = (0, 255, 255)     # Yellow
     else:
         density = "HIGH"
+        density_color = (0, 0, 255)       # Red
+
+    # --- Overlay Text ---
+    cv2.putText(frame, f"Detected vehicles: {len(final_boxes)}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+    cv2.putText(frame, f"Traffic density: {density}", (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, density_color, 2, cv2.LINE_AA)
     
-    overlay_texts = [
-        f"Detected vehicles: {vehicle_count}",
-        f"Traffic density: {density}"
-    ]
-    for i, text in enumerate(overlay_texts):
-        cv2.putText(frame, text, (10, 30 + i*30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-    
+    # --- Display the Output ---
     cv2.imshow("Traffic Analysis", frame)
     
     
