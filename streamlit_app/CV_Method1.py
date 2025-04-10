@@ -2,18 +2,19 @@ import cv2
 import numpy as np
 
 def run_traditional_model1(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print("Error: Could not open video.")
+        return None
+
     MIN_CONTOUR_AREA = 800
     IOU_THRESHOLD_NMS = 0.3
     MAX_MISSED_FRAMES = 10
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception("Error: Could not open video.")
-
     bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     persistent_detections = []
     prev_frame = None
+    out = None
 
     def compute_iou(boxA, boxB):
         xA = max(boxA[0], boxB[0])
@@ -32,8 +33,10 @@ def run_traditional_model1(video_path):
             return []
         boxes_arr = np.array([[x, y, x + w, y + h] for (x, y, w, h) in boxes], dtype=float)
         pick = []
-        x1, y1 = boxes_arr[:, 0], boxes_arr[:, 1]
-        x2, y2 = boxes_arr[:, 2], boxes_arr[:, 3]
+        x1 = boxes_arr[:, 0]
+        y1 = boxes_arr[:, 1]
+        x2 = boxes_arr[:, 2]
+        y2 = boxes_arr[:, 3]
         area = (x2 - x1 + 1) * (y2 - y1 + 1)
         idxs = np.argsort(y2)
         while len(idxs) > 0:
@@ -80,19 +83,19 @@ def run_traditional_model1(video_path):
                 updated.append({'box': current_boxes[idx], 'age': 0})
         persistent_detections = updated
 
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    output_path = "output_traditional1.mp4"
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (800, 600))
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frame = cv2.resize(frame, (800, 600))
-        fg_mask = bg_subtractor.apply(frame, learningRate=0.005)
 
+        frame = cv2.resize(frame, (800, 600))
+
+        if out is None:
+            height, width = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter("output_traditional1.mp4", fourcc, 20.0, (width, height))
+
+        fg_mask = bg_subtractor.apply(frame, learningRate=0.005)
         if prev_frame is not None:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -101,6 +104,7 @@ def run_traditional_model1(video_path):
             fg_mask = cv2.bitwise_or(fg_mask, diff_mask)
         prev_frame = frame.copy()
 
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel, iterations=2)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_DILATE, kernel, iterations=2)
 
@@ -110,37 +114,37 @@ def run_traditional_model1(video_path):
             area = cv2.contourArea(cnt)
             if area < MIN_CONTOUR_AREA:
                 continue
-            x, y, w_, h_ = cv2.boundingRect(cnt)
-            current_boxes.append((x, y, w_, h_))
+            x, y, w, h = cv2.boundingRect(cnt)
+            current_boxes.append((x, y, w, h))
 
         current_boxes = non_max_suppression_fast(current_boxes, IOU_THRESHOLD_NMS)
         update_persistent_detections(current_boxes)
-
         final_boxes = [d['box'] for d in persistent_detections]
-        for (x, y, w_, h_) in final_boxes:
-            cv2.rectangle(frame, (x, y), (x + w_, y + h_), (0, 255, 0), 2)
 
-        vehicle_area = sum([w_ * h_ for (_, _, w_, h_) in final_boxes])
+        vehicle_area = sum([w * h for (x, y, w, h) in final_boxes])
         road_area = frame.shape[0] * frame.shape[1]
         density_ratio = vehicle_area / road_area
 
         if density_ratio < 0.2:
             density = "LOW"
-            color = (0, 255, 0)
+            density_color = (0, 255, 0)
         elif density_ratio < 0.5:
             density = "MEDIUM"
-            color = (0, 255, 255)
+            density_color = (0, 255, 255)
         else:
             density = "HIGH"
-            color = (0, 0, 255)
+            density_color = (0, 0, 255)
+
+        for (x, y, w, h) in final_boxes:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
         cv2.putText(frame, f"Detected vehicles: {len(final_boxes)}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.putText(frame, f"Traffic density: {density}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, density_color, 2)
 
         out.write(frame)
 
     cap.release()
     out.release()
-    return output_path
+    return "output_traditional1.mp4"
